@@ -183,7 +183,7 @@ def main():
     # Save updated alert state
     save_alert_state(alert_state)
 
-    print(f"\nMonitoring complete. Next check in 10 minutes.\n")
+    print(f"\nMonitoring complete. Next check in 20 minutes.\n")
 
     # Exit with error code if there are issues (for GitHub Actions visibility)
     if issues_found:
