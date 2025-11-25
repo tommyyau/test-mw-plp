@@ -8,7 +8,7 @@ import os
 import json
 import sys
 from datetime import datetime
-import requests
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from bs4 import BeautifulSoup
 from twilio.rest import Client
 
@@ -50,31 +50,29 @@ def save_alert_state(state):
         json.dump(state, f, indent=2)
 
 
-def count_subcategories(url):
+def count_subcategories(page, url):
     """
     Fetch a URL and count subcategories using the CSS selector
     Returns (count, error_message) tuple
     """
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
-        }
+        # Navigate to the page
+        page.goto(url, wait_until="networkidle", timeout=60000)
 
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
+        # Wait for category tiles to load
+        page.wait_for_selector(SUBCATEGORY_SELECTOR, timeout=30000)
 
-        soup = BeautifulSoup(response.content, 'html.parser')
+        # Get page content
+        content = page.content()
+        soup = BeautifulSoup(content, 'html.parser')
         subcategories = soup.select(SUBCATEGORY_SELECTOR)
 
         return len(subcategories), None
 
-    except requests.exceptions.RequestException as e:
-        return 0, f"Request error: {str(e)}"
+    except PlaywrightTimeout as e:
+        return 0, f"Timeout loading page: {str(e)}"
     except Exception as e:
-        return 0, f"Parsing error: {str(e)}"
+        return 0, f"Error: {str(e)}"
 
 
 def send_twilio_alert(message):
@@ -111,44 +109,55 @@ def main():
     issues_found = []
     recoveries = []
 
-    for url in URLS_TO_MONITOR:
-        page_name = url.split('/')[-2]
-        print(f"Checking: {page_name} ({url})")
+    # Launch browser with Playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        )
+        page = context.new_page()
 
-        count, error = count_subcategories(url)
+        for url in URLS_TO_MONITOR:
+            page_name = url.split('/')[-2]
+            print(f"Checking: {page_name} ({url})")
 
-        if error:
-            print(f"  ✗ ERROR: {error}")
-            issues_found.append(f"{page_name}: {error}")
-            continue
+            count, error = count_subcategories(page, url)
 
-        print(f"  Found {count} subcategories")
+            if error:
+                print(f"  ✗ ERROR: {error}")
+                issues_found.append(f"{page_name}: {error}")
+                continue
 
-        # Check if subcategories dropped below threshold
-        if count < MIN_SUBCATEGORIES:
-            print(f"  ⚠ WARNING: Below minimum ({MIN_SUBCATEGORIES})")
+            print(f"  Found {count} subcategories")
 
-            # Only alert if we haven't alerted for this URL yet
-            if not alert_state.get(url, {}).get('alerted', False):
-                issues_found.append(f"{page_name}: {count} subcategories (minimum: {MIN_SUBCATEGORIES})")
-                alert_state[url] = {
-                    'alerted': True,
-                    'timestamp': datetime.now().isoformat(),
-                    'count': count
-                }
+            # Check if subcategories dropped below threshold
+            if count < MIN_SUBCATEGORIES:
+                print(f"  ⚠ WARNING: Below minimum ({MIN_SUBCATEGORIES})")
+
+                # Only alert if we haven't alerted for this URL yet
+                if not alert_state.get(url, {}).get('alerted', False):
+                    issues_found.append(f"{page_name}: {count} subcategories (minimum: {MIN_SUBCATEGORIES})")
+                    alert_state[url] = {
+                        'alerted': True,
+                        'timestamp': datetime.now().isoformat(),
+                        'count': count
+                    }
+                else:
+                    print(f"  (Already alerted previously)")
             else:
-                print(f"  (Already alerted previously)")
-        else:
-            print(f"  ✓ OK")
+                print(f"  ✓ OK")
 
-            # Check if this URL has recovered
-            if alert_state.get(url, {}).get('alerted', False):
-                recoveries.append(f"{page_name}: Recovered to {count} subcategories")
-                alert_state[url] = {
-                    'alerted': False,
-                    'timestamp': datetime.now().isoformat(),
-                    'count': count
-                }
+                # Check if this URL has recovered
+                if alert_state.get(url, {}).get('alerted', False):
+                    recoveries.append(f"{page_name}: Recovered to {count} subcategories")
+                    alert_state[url] = {
+                        'alerted': False,
+                        'timestamp': datetime.now().isoformat(),
+                        'count': count
+                    }
+
+        browser.close()
 
     # Send alerts if there are new issues
     if issues_found:
