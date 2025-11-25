@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+Mountain Warehouse PLP Monitoring Script
+Monitors PLP pages for sub-category count and sends alerts via Twilio
+"""
+
+import os
+import json
+import sys
+from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+from twilio.rest import Client
+
+# Configuration
+URLS_TO_MONITOR = [
+    "https://www.mountainwarehouse.com/eu/mens/",
+    "https://www.mountainwarehouse.com/eu/womens/",
+    "https://www.mountainwarehouse.com/eu/kids/",
+    "https://www.mountainwarehouse.com/eu/footwear/",
+    "https://www.mountainwarehouse.com/eu/equipment/",
+    "https://www.mountainwarehouse.com/eu/by-activity/",
+    "https://www.mountainwarehouse.com/eu/camping/",
+    "https://www.mountainwarehouse.com/eu/ski/",
+    "https://www.mountainwarehouse.com/eu/clearance/",
+]
+
+SUBCATEGORY_SELECTOR = 'a[class*="CategoryTile_categoryTile"]'
+MIN_SUBCATEGORIES = 6
+ALERT_STATE_FILE = "alert_state.json"
+
+# Twilio configuration from environment variables
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_FROM = os.getenv("TWILIO_PHONE_FROM")
+TWILIO_PHONE_TO = os.getenv("TWILIO_PHONE_TO")
+
+
+def load_alert_state():
+    """Load the alert state from file"""
+    if os.path.exists(ALERT_STATE_FILE):
+        with open(ALERT_STATE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_alert_state(state):
+    """Save the alert state to file"""
+    with open(ALERT_STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
+def count_subcategories(url):
+    """
+    Fetch a URL and count subcategories using the CSS selector
+    Returns (count, error_message) tuple
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
+
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        subcategories = soup.select(SUBCATEGORY_SELECTOR)
+
+        return len(subcategories), None
+
+    except requests.exceptions.RequestException as e:
+        return 0, f"Request error: {str(e)}"
+    except Exception as e:
+        return 0, f"Parsing error: {str(e)}"
+
+
+def send_twilio_alert(message):
+    """Send SMS alert via Twilio"""
+    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_FROM, TWILIO_PHONE_TO]):
+        print("ERROR: Twilio credentials not configured")
+        return False
+
+    try:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+        sms = client.messages.create(
+            body=message,
+            from_=TWILIO_PHONE_FROM,
+            to=TWILIO_PHONE_TO
+        )
+
+        print(f"✓ SMS sent successfully (SID: {sms.sid})")
+        return True
+
+    except Exception as e:
+        print(f"ERROR sending SMS: {str(e)}")
+        return False
+
+
+def main():
+    """Main monitoring function"""
+    print(f"\n{'='*60}")
+    print(f"Mountain Warehouse PLP Monitor")
+    print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"{'='*60}\n")
+
+    alert_state = load_alert_state()
+    issues_found = []
+    recoveries = []
+
+    for url in URLS_TO_MONITOR:
+        page_name = url.split('/')[-2]
+        print(f"Checking: {page_name} ({url})")
+
+        count, error = count_subcategories(url)
+
+        if error:
+            print(f"  ✗ ERROR: {error}")
+            issues_found.append(f"{page_name}: {error}")
+            continue
+
+        print(f"  Found {count} subcategories")
+
+        # Check if subcategories dropped below threshold
+        if count < MIN_SUBCATEGORIES:
+            print(f"  ⚠ WARNING: Below minimum ({MIN_SUBCATEGORIES})")
+
+            # Only alert if we haven't alerted for this URL yet
+            if not alert_state.get(url, {}).get('alerted', False):
+                issues_found.append(f"{page_name}: {count} subcategories (minimum: {MIN_SUBCATEGORIES})")
+                alert_state[url] = {
+                    'alerted': True,
+                    'timestamp': datetime.now().isoformat(),
+                    'count': count
+                }
+            else:
+                print(f"  (Already alerted previously)")
+        else:
+            print(f"  ✓ OK")
+
+            # Check if this URL has recovered
+            if alert_state.get(url, {}).get('alerted', False):
+                recoveries.append(f"{page_name}: Recovered to {count} subcategories")
+                alert_state[url] = {
+                    'alerted': False,
+                    'timestamp': datetime.now().isoformat(),
+                    'count': count
+                }
+
+    # Send alerts if there are new issues
+    if issues_found:
+        message = f"🚨 Mountain Warehouse Alert\n\n"
+        message += f"The following pages have fewer than {MIN_SUBCATEGORIES} subcategories:\n\n"
+        message += "\n".join(f"• {issue}" for issue in issues_found)
+
+        print(f"\n{'='*60}")
+        print("SENDING ALERT:")
+        print(message)
+        print(f"{'='*60}\n")
+
+        send_twilio_alert(message)
+
+    # Log recoveries (but don't send SMS for recoveries)
+    if recoveries:
+        print(f"\n{'='*60}")
+        print("RECOVERIES DETECTED:")
+        for recovery in recoveries:
+            print(f"  ✓ {recovery}")
+        print(f"{'='*60}\n")
+
+    # Save updated alert state
+    save_alert_state(alert_state)
+
+    print(f"\nMonitoring complete. Next check in 10 minutes.\n")
+
+    # Exit with error code if there are issues (for GitHub Actions visibility)
+    if issues_found:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

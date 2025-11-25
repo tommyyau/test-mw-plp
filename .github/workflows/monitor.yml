@@ -1,0 +1,60 @@
+name: Mountain Warehouse PLP Monitor
+
+on:
+  # Run every 10 minutes
+  schedule:
+    - cron: '*/10 * * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+  # Run on push to test changes
+  push:
+    branches:
+      - main
+      - 'claude/**'
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run monitoring script
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_PHONE_FROM: ${{ secrets.TWILIO_PHONE_FROM }}
+          TWILIO_PHONE_TO: ${{ secrets.TWILIO_PHONE_TO }}
+        run: |
+          python monitor.py
+        continue-on-error: true
+
+      - name: Commit alert state changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add alert_state.json
+          git diff --staged --quiet || git commit -m "Update alert state [skip ci]"
+        continue-on-error: true
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+        continue-on-error: true
