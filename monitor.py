@@ -161,9 +161,9 @@ def main():
 
     # Send alerts if there are new issues
     if issues_found:
-        message = f"🚨 Mountain Warehouse Alert\n\n"
-        message += f"The following pages have fewer than {MIN_SUBCATEGORIES} subcategories:\n\n"
-        message += "\n".join(f"• {issue}" for issue in issues_found)
+        # Keep message short for SMS limits (70 chars with emoji/unicode)
+        message = f"MW Alert: {len(issues_found)} page(s) <{MIN_SUBCATEGORIES} cats\n"
+        message += "\n".join(f"{issue.split(':')[0]}: {issue.split(':')[1].split()[0]}" for issue in issues_found)
 
         print(f"\n{'='*60}")
         print("SENDING ALERT:")
