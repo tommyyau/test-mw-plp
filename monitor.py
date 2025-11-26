@@ -26,7 +26,7 @@ URLS_TO_MONITOR = [
 ]
 
 SUBCATEGORY_SELECTOR = 'a[class*="CategoryTile_categoryTile"]'
-MIN_SUBCATEGORIES = 8
+MIN_SUBCATEGORIES = 6
 ALERT_STATE_FILE = "alert_state.json"
 
 # Twilio configuration from environment variables
