@@ -1,12 +1,1 @@
-{
-  "https://www.mountainwarehouse.com/eu/equipment/": {
-    "alerted": true,
-    "timestamp": "2025-11-26T07:06:13.128964",
-    "count": 6
-  },
-  "https://www.mountainwarehouse.com/eu/camping/": {
-    "alerted": true,
-    "timestamp": "2025-11-26T07:06:15.766796",
-    "count": 7
-  }
-}
+{}
